@@ -107,35 +107,41 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
       // We process the full text of the paragraph and rebuild the inner elements.
       const newInnerXml = processTextNode(rawText);
       
-      // Remove all run nodes <w:r> containing text
-      // Note: This is an oversimplification. We might lose text formatting (bold/italic) applied to parts of the text
-      // A more robust approach would keep formatting, but rebuilding from plain text is safer for math injection without a complex engine.
-      
-      // Let's replace the inner HTML of the paragraph
       // We need to keep w:pPr (paragraph properties) if it exists
       const wppr = p.getElementsByTagName("w:pPr")[0];
       
-      // Create a temporary element to hold the new XML
-      // Since DOMParser doesn't support setting innerHTML on XML documents directly with standard strings easily,
-      // we serialize and replace. We'll do a string replacement for the paragraph instead to preserve namespaces correctly.
+      // Clear the paragraph children
+      while (p.firstChild) {
+        p.removeChild(p.firstChild);
+      }
       
-      const serializer = new XMLSerializer();
-      const pStr = serializer.serializeToString(p);
-      const wpprStr = wppr ? serializer.serializeToString(wppr) : '';
+      // Re-append properties if they existed
+      if (wppr) {
+        p.appendChild(wppr);
+      }
       
-      // Replace the entire <w:p> with our new content
-      const newPStr = `<w:p>${wpprStr}${newInnerXml}</w:p>`;
+      // Create a temporary document to parse the new inner XML
+      // We wrap it in a root element with required namespaces
+      const tempXmlStr = `<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${newInnerXml}</w:root>`;
+      const tempDoc = parser.parseFromString(tempXmlStr, "application/xml");
       
-      // Modify the original string (docXml was already loaded)
-      // Wait, since we are doing string replacement, it's better to modify docXml cumulatively. 
-      // Replace the entire paragraph string in the document XML string.
-      docXml = docXml.replace(pStr, newPStr);
+      // Append the parsed nodes to our target paragraph
+      if (tempDoc.documentElement) {
+        Array.from(tempDoc.documentElement.childNodes).forEach(node => {
+           p.appendChild(xmlDoc.importNode(node, true));
+        });
+      }
     }
   }
 
   // Save the modified document.xml back to the zip
   if (onProgress) onProgress("Đang đóng gói file mới...");
-  loadedZip.file("word/document.xml", docXml);
+  
+  // Serialize the modified XML DOM back exactly as intended
+  const serializer = new XMLSerializer();
+  const modifiedDocXml = serializer.serializeToString(xmlDoc);
+  
+  loadedZip.file("word/document.xml", modifiedDocXml);
 
   return await loadedZip.generateAsync({ type: 'blob' });
 }
