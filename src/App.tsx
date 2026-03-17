@@ -5,9 +5,6 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import appCode from './App.tsx?raw';
-import mainCode from './main.tsx?raw';
-import cssCode from './index.css?raw';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'file' | 'text'>('file');
@@ -22,61 +19,6 @@ export default function App() {
   const [copySuccess, setCopySuccess] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleDownloadZip = async () => {
-    const zip = new JSZip();
-    
-    // Thư mục src
-    const src = zip.folder("src");
-    if (src) {
-      src.file("App.tsx", appCode);
-      src.file("main.tsx", mainCode);
-      src.file("index.css", cssCode);
-      src.file("vite-env.d.ts", `/// <reference types="vite/client" />`);
-    }
-    
-    // Các file cấu hình gốc
-    zip.file("index.html", `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Latex to Mathtype PRO</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>`);
-    
-    zip.file("package.json", JSON.stringify({
-      "name": "latex-to-mathtype",
-      "private": true,
-      "version": "1.0.0",
-      "type": "module",
-      "scripts": {
-        "dev": "vite",
-        "build": "tsc && vite build",
-        "preview": "vite preview"
-      },
-      "dependencies": {
-        "file-saver": "^2.0.5",
-        "jszip": "^3.10.1",
-        "katex": "^0.16.9",
-        "lucide-react": "^0.344.0",
-        "motion": "^12.23.24",
-        "react": "^19.0.0",
-        "react-dom": "^19.0.0"
-      },
-      "devDependencies": {
-        "@tailwindcss/vite": "^4.1.14",
-        "@types/file-saver": "^2.0.7",
-        "@types/katex": "^0.16.7",
-        "@types/react": "^19.0.0",
-        "@types/react-dom": "^19.0.0",
-        "@vitejs/plugin-react": "^4.2.1",
-        "tailwindcss": "^4.1.14",
-        "typescript": "^5.2.2",
-        "vite": "^6.2.0"
-      }
-    }, null, 2));
-
-    zip.file("vite.config.ts", `import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n});`);
-
-    zip.file("tsconfig.json", `{\n  "compilerOptions": {\n    "target": "ES2020",\n    "useDefineForClassFields": true,\n    "lib": ["ES2020", "DOM", "DOM.Iterable"],\n    "module": "ESNext",\n    "skipLibCheck": true,\n    "moduleResolution": "bundler",\n    "allowImportingTsExtensions": true,\n    "resolveJsonModule": true,\n    "isolatedModules": true,\n    "noEmit": true,\n    "jsx": "react-jsx",\n    "strict": true\n  },\n  "include": ["src"]\n}`);
-
-    const content = await zip.generateAsync({ type: 'blob' });
-    saveAs(content, "latex-to-mathtype-source.zip");
-  };
 
   // Render LaTeX preview and generate MathML
   useEffect(() => {
@@ -159,7 +101,7 @@ export default function App() {
         console.log(msg);
       });
       
-      saveAs(blob, `mathtype_${file.name}`);
+      saveAs(blob, `equations_${file.name}`);
       setConversionSuccess(true);
     } catch (err: any) {
       setError(err.message || 'Đã xảy ra lỗi trong quá trình chuyển đổi. Vui lòng thử lại.');
@@ -192,26 +134,14 @@ export default function App() {
         <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-cyan-500/20 rounded-full blur-3xl"></div>
 
         <div className="relative z-10">
-          {/* Nút tải source code */}
-          <button
-            onClick={handleDownloadZip}
-            className="absolute top-0 right-0 p-2.5 bg-violet-100 text-violet-600 hover:bg-violet-200 hover:text-violet-700 rounded-full transition-all duration-200 group shadow-sm z-20"
-            title="Tải Source Code (.zip)"
-          >
-            <Download size={20} />
-            <span className="absolute -bottom-10 right-0 w-max bg-slate-800 text-white text-xs px-2.5 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-lg pointer-events-none">
-              Tải Source Code
-            </span>
-          </button>
-
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-slate-900 flex items-center justify-center gap-3 mb-2">
-              Latex to Mathtype
+              Latex to Equations
               <span className="bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white text-xs px-2.5 py-1 rounded-full font-semibold tracking-wide shadow-sm">
                 PRO
               </span>
             </h1>
-            <p className="text-slate-500 font-medium">Chuyển đổi Latex trong word sang dạng mathtype</p>
+            <p className="text-slate-500 font-medium">Chuyển đổi Latex trong word sang dạng Equations</p>
           </div>
 
           {/* Tabs */}
@@ -382,7 +312,7 @@ export default function App() {
 
       <div className="mt-8 text-center text-sm text-slate-600 flex flex-col gap-1 font-medium">
         <p>© 2026 Math Tools Utility</p>
-        <p>Xây dựng bởi <span className="font-bold text-violet-700">Hồ Sỹ Long - Zalo 0943278804</span></p>
+        <p>Phát triển bởi thầy <span className="font-bold text-violet-700">Hồ Sỹ Long - Zalo 0943278804</span></p>
       </div>
     </div>
   );
