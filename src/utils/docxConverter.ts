@@ -1,5 +1,7 @@
 import JSZip from 'jszip';
 import { convertLatexToOMML } from './mathConverter';
+import { convertTikzToImageUrl } from './tikzConverter';
+import { fetchImageAsArrayBuffer, addImageToDocx } from './imageInjector';
 
 // Helper to escape XML
 function escapeXml(unsafe: string) {
@@ -25,14 +27,10 @@ function processTextNode(text: string): string {
   // Regex to match inline equations $...$
   const inlineRegex = /\$(.*?)\$/gs;
   
-  // Note: parsing text sequentially allows us to mix text and equations
   let htmlResult = text;
-  
-  // A simple strategy is to use a token replacer to prevent overlapping matches
   const tokens: {id: string, xml: string}[] = [];
   let tokenCounter = 0;
 
-  // Replace block math
   htmlResult = htmlResult.replace(blockRegex, (match, p1, p2) => {
     const latex = (p1 || p2).trim();
     if (!latex) return match;
@@ -42,7 +40,6 @@ function processTextNode(text: string): string {
     return tokenId;
   });
 
-  // Replace inline math
   htmlResult = htmlResult.replace(inlineRegex, (match, p1) => {
     const latex = p1.trim();
     if (!latex) return match;
@@ -52,7 +49,6 @@ function processTextNode(text: string): string {
     return tokenId;
   });
 
-  // Split by tokens and reconstruct
   const parts = htmlResult.split(/(__MATH_TOKEN_\d+__)/);
   let finalXml = '';
   
@@ -63,7 +59,6 @@ function processTextNode(text: string): string {
         finalXml += token.xml;
       }
     } else if (part.length > 0) {
-      // Regular text needs to be wrapped in <w:r><w:t>
       finalXml += `<w:r><w:t xml:space="preserve">${escapeXml(part)}</w:t></w:r>`;
     }
   }
@@ -71,8 +66,72 @@ function processTextNode(text: string): string {
   return finalXml;
 }
 
+async function processTikzBlock(zip: JSZip, xmlDoc: Document, nodes: Element[], code: string) {
+  try {
+    const match = code.match(/\\begin{tikzpicture}.*?\\end{tikzpicture}/s);
+    if (!match) return; 
+    const tikzCode = match[0];
+    
+    // 1. Get Image URL
+    const imageUrl = await convertTikzToImageUrl(tikzCode);
+    
+    // 2. Fetch image buffer
+    const buffer = await fetchImageAsArrayBuffer(imageUrl);
+    
+    // 3. Get Image dimensions via browser Image object
+    const blob = new Blob([buffer], { type: 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.src = url;
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.onerror = resolve;
+    });
+    
+    const widthEmus = Math.round((img.naturalWidth || 400) * 9525);
+    const heightEmus = Math.round((img.naturalHeight || 300) * 9525);
+    URL.revokeObjectURL(url);
+    
+    // 4. Inject into Docx
+    const drawingXml = await addImageToDocx(zip, buffer, widthEmus, heightEmus);
+    
+    // 5. Update XML nodes
+    const firstP = nodes[0];
+    const wppr = firstP.getElementsByTagName("w:pPr")[0];
+    
+    // Empty all nodes that contained the TikZ code
+    nodes.forEach(p => {
+      while (p.firstChild) p.removeChild(p.firstChild);
+    });
+    
+    if (wppr) {
+      firstP.appendChild(wppr);
+    }
+    
+    // Parse drawing XML with all needed namespaces
+    const parser = new DOMParser();
+    const tempXmlStr = `<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${drawingXml}</w:root>`;
+    const tempDoc = parser.parseFromString(tempXmlStr, "application/xml");
+    
+    if (tempDoc.documentElement) {
+      Array.from(tempDoc.documentElement.childNodes).forEach(node => {
+         firstP.appendChild(xmlDoc.importNode(node, true));
+      });
+    }
+  } catch (err) {
+    console.error("Failed to process Tikz block", err);
+    // Add text fallback if failed
+    const firstP = nodes[0];
+    const run = xmlDoc.createElementNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "w:r");
+    const text = xmlDoc.createElementNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "w:t");
+    text.textContent = "[Lỗi khi tạo ảnh TikZ. Vui lòng kiểm tra lại mã.]";
+    run.appendChild(text);
+    firstP.appendChild(run);
+  }
+}
+
 /**
- * Processes a DOCX file, replacing LaTeX with OMML
+ * Processes a DOCX file, replacing LaTeX with OMML and TikZ with Images
  */
 export async function processDocxFile(file: File, onProgress?: (msg: string) => void): Promise<Blob> {
   if (onProgress) onProgress("Đang đọc file Word...");
@@ -84,60 +143,74 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
     throw new Error("File không đúng định dạng Word (.docx)");
   }
 
-  if (onProgress) onProgress("Đang phân tích và chuyển đổi mã LaTeX...");
-  let docXml = await docXmlFile.async("string");
+  if (onProgress) onProgress("Đang phân tích mã LaTeX và TikZ...");
+  const docXml = await docXmlFile.async("string");
 
-  // A generic paragraph regex is `<w:p>...</w:p>`
-  // But w:p might have attributes. 
-  // To avoid complex XML parsing that breaks elements, we'll parse paragraphs using DOMParser
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(docXml, "application/xml");
   
-  const paragraphs = xmlDoc.getElementsByTagName("w:p");
+  const paragraphs = Array.from(xmlDoc.getElementsByTagName("w:p"));
   
+  let inTikz = false;
+  let currentTikzNodes: Element[] = [];
+  let currentTikzCode = '';
+  
+  // Track promises to wait for all asynchronous image generations
+  const blockPromises: Promise<void>[] = [];
+
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
-    // Gather all text from w:t nodes
     const texts = Array.from(p.getElementsByTagName("w:t")).map(t => t.textContent || '');
     const rawText = texts.join('');
     
-    // Check if the paragraph contains latex markers
-    if (rawText.includes('$') || rawText.includes('\\[')) {
-      // It has latex! 
-      // We process the full text of the paragraph and rebuild the inner elements.
-      const newInnerXml = processTextNode(rawText);
-      
-      // We need to keep w:pPr (paragraph properties) if it exists
-      const wppr = p.getElementsByTagName("w:pPr")[0];
-      
-      // Clear the paragraph children
-      while (p.firstChild) {
-        p.removeChild(p.firstChild);
+    if (!inTikz) {
+      if (rawText.includes('\\begin{tikzpicture}')) {
+        inTikz = true;
+        currentTikzNodes = [p];
+        currentTikzCode = rawText;
+        
+        if (rawText.includes('\\end{tikzpicture}')) {
+          inTikz = false;
+          blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode));
+          currentTikzNodes = [];
+          currentTikzCode = '';
+        }
+      } else if (rawText.includes('$') || rawText.includes('\\[')) {
+        const newInnerXml = processTextNode(rawText);
+        const wppr = p.getElementsByTagName("w:pPr")[0];
+        
+        while (p.firstChild) p.removeChild(p.firstChild);
+        if (wppr) p.appendChild(wppr);
+        
+        const tempXmlStr = `<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${newInnerXml}</w:root>`;
+        const tempDoc = parser.parseFromString(tempXmlStr, "application/xml");
+        
+        if (tempDoc.documentElement) {
+          Array.from(tempDoc.documentElement.childNodes).forEach(node => {
+             p.appendChild(xmlDoc.importNode(node, true));
+          });
+        }
       }
-      
-      // Re-append properties if they existed
-      if (wppr) {
-        p.appendChild(wppr);
-      }
-      
-      // Create a temporary document to parse the new inner XML
-      // We wrap it in a root element with required namespaces
-      const tempXmlStr = `<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${newInnerXml}</w:root>`;
-      const tempDoc = parser.parseFromString(tempXmlStr, "application/xml");
-      
-      // Append the parsed nodes to our target paragraph
-      if (tempDoc.documentElement) {
-        Array.from(tempDoc.documentElement.childNodes).forEach(node => {
-           p.appendChild(xmlDoc.importNode(node, true));
-        });
+    } else {
+      currentTikzNodes.push(p);
+      currentTikzCode += '\n' + rawText;
+      if (rawText.includes('\\end{tikzpicture}')) {
+        inTikz = false;
+        blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode));
+        currentTikzNodes = [];
+        currentTikzCode = '';
       }
     }
   }
 
-  // Save the modified document.xml back to the zip
+  // Wait for all TikZ generations to finish!
+  if (blockPromises.length > 0) {
+    if (onProgress) onProgress(`Đang tải và chèn ${blockPromises.length} hình ảnh TikZ...`);
+    await Promise.all(blockPromises);
+  }
+
   if (onProgress) onProgress("Đang đóng gói file mới...");
   
-  // Serialize the modified XML DOM back exactly as intended
   const serializer = new XMLSerializer();
   const modifiedDocXml = serializer.serializeToString(xmlDoc);
   
