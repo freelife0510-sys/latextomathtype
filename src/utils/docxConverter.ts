@@ -69,9 +69,17 @@ function processTextNode(text: string): string {
 async function processTikzBlock(zip: JSZip, xmlDoc: Document, nodes: Element[], code: string, preambleExtras: string = '') {
   try {
     const match = code.match(/\\begin{tikzpicture}.*?\\end{tikzpicture}/s);
-    if (!match) return; 
-    const tikzCode = match[0];
+    if (!match) return;
+    let tikzCode = match[0];
     
+    // Fix common Word AutoCorrect typography that breaks LaTeX
+    tikzCode = tikzCode
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/\u2013/g, '--') // en-dash
+      .replace(/\u2014/g, '---') // em-dash
+      .replace(/\u2026/g, '...'); // ellipsis
+      
     // 1. Get Image URL
     const imageUrl = await convertTikzToImageUrl(tikzCode, preambleExtras);
     
@@ -162,12 +170,14 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
   const docText = paragraphs.map(p => Array.from(p.getElementsByTagName("w:t")).map(t => t.textContent || '').join('')).join('\n');
   
   // Extract preamble commands (usepackage, usetikzlibrary, pgfplotsset, tdplotsetmaincoords)
-  const usepackages = docText.match(/\\usepackage(?:\[[^\]]*\])?{[^}]+}/g) || [];
-  const usetikzlibs = docText.match(/\\usetikzlibrary(?:\[[^\]]*\])?{[^}]+}/g) || [];
-  const tdplots = docText.match(/\\tdplotsetmaincoords{[^}]+}{[^}]+}/g) || [];
-  const pgfplots = docText.match(/\\pgfplotsset{[^}]+}/g) || [];
+  // We use more forgiving regex to handle possible spaces inserted by Word
+  const usepackages = docText.match(/\\usepackage(?:\[[^\]]*\])?\s*{[^}]+}/g) || [];
+  const usetikzlibs = docText.match(/\\usetikzlibrary(?:\[[^\]]*\])?\s*{[^}]+}/g) || [];
+  const tdplots = docText.match(/\\tdplotsetmaincoords\s*{[^}]+}\s*{[^}]+}/g) || [];
+  const pgfplots = docText.match(/\\pgfplotsset\s*{[^}]+}/g) || [];
+  const defs = docText.match(/\\def\\[a-zA-Z]+\s*{[^}]+}/g) || [];
   
-  const preambleExtras = [...usepackages, ...usetikzlibs, ...tdplots, ...pgfplots].join('\n');
+  const preambleExtras = [...usepackages, ...usetikzlibs, ...tdplots, ...pgfplots, ...defs].join('\n');
   
   let inTikz = false;
   let currentTikzNodes: Element[] = [];
