@@ -66,14 +66,14 @@ function processTextNode(text: string): string {
   return finalXml;
 }
 
-async function processTikzBlock(zip: JSZip, xmlDoc: Document, nodes: Element[], code: string) {
+async function processTikzBlock(zip: JSZip, xmlDoc: Document, nodes: Element[], code: string, preambleExtras: string = '') {
   try {
     const match = code.match(/\\begin{tikzpicture}.*?\\end{tikzpicture}/s);
     if (!match) return; 
     const tikzCode = match[0];
     
     // 1. Get Image URL
-    const imageUrl = await convertTikzToImageUrl(tikzCode);
+    const imageUrl = await convertTikzToImageUrl(tikzCode, preambleExtras);
     
     // 2. Fetch image buffer
     const buffer = await fetchImageAsArrayBuffer(imageUrl);
@@ -120,6 +120,13 @@ async function processTikzBlock(zip: JSZip, xmlDoc: Document, nodes: Element[], 
     }
   } catch (err) {
     console.error("Failed to process Tikz block", err);
+    
+    // Remember to clear the original nodes BEFORE appending the error text, 
+    // Otherwise the original tikz code stays!
+    nodes.forEach(p => {
+      while (p.firstChild) p.removeChild(p.firstChild);
+    });
+
     // Add text fallback if failed
     const firstP = nodes[0];
     const run = xmlDoc.createElementNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "w:r");
@@ -151,6 +158,17 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
   
   const paragraphs = Array.from(xmlDoc.getElementsByTagName("w:p"));
   
+  // Extract all text to find preamble packages/commands
+  const docText = paragraphs.map(p => Array.from(p.getElementsByTagName("w:t")).map(t => t.textContent || '').join('')).join('\n');
+  
+  // Extract preamble commands (usepackage, usetikzlibrary, pgfplotsset, tdplotsetmaincoords)
+  const usepackages = docText.match(/\\usepackage(?:\[[^\]]*\])?{[^}]+}/g) || [];
+  const usetikzlibs = docText.match(/\\usetikzlibrary(?:\[[^\]]*\])?{[^}]+}/g) || [];
+  const tdplots = docText.match(/\\tdplotsetmaincoords{[^}]+}{[^}]+}/g) || [];
+  const pgfplots = docText.match(/\\pgfplotsset{[^}]+}/g) || [];
+  
+  const preambleExtras = [...usepackages, ...usetikzlibs, ...tdplots, ...pgfplots].join('\n');
+  
   let inTikz = false;
   let currentTikzNodes: Element[] = [];
   let currentTikzCode = '';
@@ -171,7 +189,7 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
         
         if (rawText.includes('\\end{tikzpicture}')) {
           inTikz = false;
-          blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode));
+          blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode, preambleExtras));
           currentTikzNodes = [];
           currentTikzCode = '';
         }
@@ -196,7 +214,7 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
       currentTikzCode += '\n' + rawText;
       if (rawText.includes('\\end{tikzpicture}')) {
         inTikz = false;
-        blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode));
+        blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode, preambleExtras));
         currentTikzNodes = [];
         currentTikzCode = '';
       }

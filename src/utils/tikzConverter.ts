@@ -2,7 +2,7 @@
  * Utility for converting TikZ code to a PNG image URL using QuickLaTeX API
  */
 
-export async function convertTikzToImageUrl(tikzCode: string): Promise<string> {
+export async function convertTikzToImageUrl(tikzCode: string, preambleExtras: string = ""): Promise<string> {
   try {
     // We add common tikz libraries that might be used
     const preamble = `
@@ -10,6 +10,7 @@ export async function convertTikzToImageUrl(tikzCode: string): Promise<string> {
 \\usepackage{pgfplots}
 \\pgfplotsset{compat=1.18}
 \\usetikzlibrary{calc,angles,quotes,intersections,patterns,arrows.meta,decorations.markings,decorations.pathmorphing}
+${preambleExtras}
     `.trim();
 
     const body = encodeURIComponent(
@@ -24,17 +25,11 @@ export async function convertTikzToImageUrl(tikzCode: string): Promise<string> {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        // Avoid CORS errors if QuickLaTeX allows generic Origin.
-        // Actually QuickLaTeX is very open.
       },
       body: formData,
     });
 
     const text = await response.text();
-    // QuickLaTeX response format:
-    // status\r\n
-    // url\r\n
-    // alignments...
     
     const lines = text.split('\n');
     if (lines[0].trim() !== '0') {
