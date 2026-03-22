@@ -183,8 +183,8 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
   let currentTikzNodes: Element[] = [];
   let currentTikzCode = '';
   
-  // Track promises to wait for all asynchronous image generations
-  const blockPromises: Promise<void>[] = [];
+  // Track blocks to process sequentially
+  const tikzBlocks: {nodes: Element[], code: string}[] = [];
 
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i];
@@ -199,7 +199,7 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
         
         if (rawText.includes('\\end{tikzpicture}')) {
           inTikz = false;
-          blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode, preambleExtras));
+          tikzBlocks.push({nodes: currentTikzNodes, code: currentTikzCode});
           currentTikzNodes = [];
           currentTikzCode = '';
         }
@@ -213,7 +213,15 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
         const tempXmlStr = `<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${newInnerXml}</w:root>`;
         const tempDoc = parser.parseFromString(tempXmlStr, "application/xml");
         
-        if (tempDoc.documentElement) {
+        const parserError = tempDoc.getElementsByTagName("parsererror")[0];
+        if (parserError) {
+          console.error("XML parse error in paragraph. Skipping malformed XML insertion.", parserError.textContent);
+          const run = xmlDoc.createElementNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "w:r");
+          const text = xmlDoc.createElementNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "w:t");
+          text.textContent = "[Lỗi cấu trúc dữ liệu, không thể hiển thị toán học ở đoạn này]";
+          run.appendChild(text);
+          p.appendChild(run);
+        } else if (tempDoc.documentElement) {
           Array.from(tempDoc.documentElement.childNodes).forEach(node => {
              p.appendChild(xmlDoc.importNode(node, true));
           });
@@ -224,17 +232,21 @@ export async function processDocxFile(file: File, onProgress?: (msg: string) => 
       currentTikzCode += '\n' + rawText;
       if (rawText.includes('\\end{tikzpicture}')) {
         inTikz = false;
-        blockPromises.push(processTikzBlock(loadedZip, xmlDoc, currentTikzNodes, currentTikzCode, preambleExtras));
+        tikzBlocks.push({nodes: currentTikzNodes, code: currentTikzCode});
         currentTikzNodes = [];
         currentTikzCode = '';
       }
     }
   }
 
-  // Wait for all TikZ generations to finish!
-  if (blockPromises.length > 0) {
-    if (onProgress) onProgress(`Đang tải và chèn ${blockPromises.length} hình ảnh TikZ...`);
-    await Promise.all(blockPromises);
+  // Wait for all TikZ generations sequentially to prevent JSZip concurrency corruption
+  if (tikzBlocks.length > 0) {
+    if (onProgress) onProgress(`Đang tải và chèn ${tikzBlocks.length} hình ảnh TikZ...`);
+    for (let i = 0; i < tikzBlocks.length; i++) {
+       const block = tikzBlocks[i];
+       if (onProgress) onProgress(`Đang tạo và chèn ảnh TikZ ${i+1}/${tikzBlocks.length}...`);
+       await processTikzBlock(loadedZip, xmlDoc, block.nodes, block.code, preambleExtras);
+    }
   }
 
   if (onProgress) onProgress("Đang đóng gói file mới...");

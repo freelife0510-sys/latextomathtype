@@ -45,7 +45,7 @@ export function convertLatexToOMML(latex: string, isBlock: boolean = false): str
     let omml = mml2omml(mathml);
 
     // FIX: mathml2omml does not escape XML special characters in <m:t>, causing Word file corruption
-    omml = omml.replace(/<m:t([^>]*)>(.*?)<\/m:t>/g, (match, attrs, text) => {
+    omml = omml.replace(/<m:t([^>]*)>([\s\S]*?)<\/m:t>/g, (match, attrs, text) => {
       return `<m:t${attrs}>${escapeXml(text)}</m:t>`;
     });
 
