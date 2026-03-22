@@ -1,6 +1,20 @@
 import katex from 'katex';
 import { mml2omml } from 'mathml2omml';
 
+// Helper to escape XML special characters
+function escapeXml(unsafe: string) {
+  return unsafe.replace(/[<>&'"]/g, function (c) {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case '\'': return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
+}
+
 /**
  * Converts a LaTeX string to a Word OMML string.
  */
@@ -28,13 +42,18 @@ export function convertLatexToOMML(latex: string, isBlock: boolean = false): str
     }
 
     // 3. Convert MathML to OMML using mathml2omml
-    const omml = mml2omml(mathml);
+    let omml = mml2omml(mathml);
+
+    // FIX: mathml2omml does not escape XML special characters in <m:t>, causing Word file corruption
+    omml = omml.replace(/<m:t([^>]*)>(.*?)<\/m:t>/g, (match, attrs, text) => {
+      return `<m:t${attrs}>${escapeXml(text)}</m:t>`;
+    });
 
     // 4. Return the OMML string (this can be injected directly into docx XML w:p/m:oMath)
     return omml;
   } catch (err) {
     console.error("Error converting LaTeX to OMML:", err);
     // Return a fallback warning or the original text wrapped in a run
-    return `<w:r><w:t>Error processing LaTeX: ${latex}</w:t></w:r>`;
+    return `<w:r><w:t>Error processing LaTeX: ${escapeXml(latex)}</w:t></w:r>`;
   }
 }
